@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Disk usage inside VMs**, from the QEMU guest agent (`get-fsinfo`, readable by PVEAuditor on PVE 9): each
+  real filesystem in the VM's drawer, and a new early warning, *VM disk filling up* (90 % / 97 %).
+- **Several standalone Proxmox hosts** as one lab: `add-host.sh` on the extra host creates its read-only
+  token and prints one `homelab-pulse-hosts add …` line for the Pulse container. Each host's UI check uses
+  its own CA; a silent host shows as an offline node; duplicate VMIDs across hosts raise a warning.
+
 ## 1.1.0 — 2026-10-13
 
 - **Alerts** to a generic webhook (e.g. Home Assistant) and/or ntfy: service down, node offline, Proxmox

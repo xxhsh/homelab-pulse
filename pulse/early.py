@@ -140,4 +140,20 @@ def evaluate(snapshot, storage_hist, cfg, state, now):
             if pct > c["warn_pct"]:
                 out.append(_cond("ct_disk", g["vmid"], "critical" if pct > c["crit_pct"] else "warning",
                                  f"{g['name']} disk {round(pct)} % full", g["vmid"]))
+
+    c = cfg["vm_disk"]
+    if c["enabled"]:
+        for g in snapshot.get("guests", []):
+            if g.get("type") != "qemu" or not g.get("running"):
+                continue
+            fss = g.get("fs") or []
+            for f in fss:
+                if not f.get("total"):
+                    continue
+                pct = f["used"] / f["total"] * 100
+                if pct > c["warn_pct"]:
+                    where = "disk" if len(fss) == 1 or f["mount"] in ("/", "C:\\") else f["mount"]
+                    out.append(_cond("vm_disk", f"{g['vmid']}:{f['mount']}",
+                                     "critical" if pct > c["crit_pct"] else "warning",
+                                     f"{g['name']} {where} {round(pct)} % full", g["vmid"]))
     return out

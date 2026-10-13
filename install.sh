@@ -183,6 +183,7 @@ run pct push "$VMID" "$WORK/app.tgz" /tmp/homelab-pulse.tgz
 in_ct "rm -rf $APP.new && mkdir -p $APP.new && tar -xzf /tmp/homelab-pulse.tgz -C $APP.new && rm /tmp/homelab-pulse.tgz && rm -rf $APP && mv $APP.new $APP && chown -R root:root $APP && chmod -R a+rX $APP"
 run pct push "$VMID" "$SRC/homelab-pulse.service" /etc/systemd/system/homelab-pulse.service
 run pct push "$VMID" "$SRC/homelab-pulse-passwd" /usr/local/bin/homelab-pulse-passwd --perms 755
+run pct push "$VMID" "$SRC/homelab-pulse-hosts" /usr/local/bin/homelab-pulse-hosts --perms 755
 run pct push "$VMID" "$SRC/overrides.example.json" "$ETC/overrides.example.json" --perms 644
 
 if [ "$UPGRADE" = 0 ] || ! pct exec "$VMID" -- test -s "$ETC/env"; then

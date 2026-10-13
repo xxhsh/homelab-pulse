@@ -1,0 +1,6 @@
+#!/bin/sh
+# Manage the extra standalone Proxmox hosts Pulse watches. Run as root in the Pulse container.
+#   homelab-pulse-hosts add LABEL BUNDLE   (BUNDLE: the line add-host.sh printed on the other host)
+#   homelab-pulse-hosts list
+#   homelab-pulse-hosts remove LABEL
+exec /usr/bin/python3 /opt/homelab-pulse/pulse/hosts.py "$@"

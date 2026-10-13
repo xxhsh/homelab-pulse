@@ -387,7 +387,8 @@ def plan_checks(services, guests, router, nodes, ov, ca_path):
             c = {"id": f"node:{n['name']}", "name": "Proxmox UI" if len(nodes) == 1 else f"Proxmox UI ({n['name']})",
                  "kind": "tls", "host": n["ip"], "port": 8006, "sni": n["name"], "target": n["name"],
                  "source": "builtin"}
-            c.update(cafile=ca_path) if ca_path else c.update(verify=False)
+            ca = ca_path(n["name"]) if callable(ca_path) else ca_path   # one CA per standalone host
+            c.update(cafile=ca) if ca else c.update(verify=False)
             checks.append(c)
     for g in guests:
         if g.get("ip"):

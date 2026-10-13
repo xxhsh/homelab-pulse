@@ -57,6 +57,42 @@ def _guess_url(port):
     return f"http://{ip}{'' if port == 80 else f':{port}'}/"
 
 
+def read_env_file(path):
+    """KEY=VALUE lines, as systemd's EnvironmentFile reads them (comments and blanks skipped)."""
+    out = {}
+    for line in Path(path).read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def extra_hosts(dirpath):
+    """Additional standalone Proxmox hosts: one <label>.env file each in `dirpath`, with the same
+    PULSE_PVE_HOST / _PORT / _TOKEN_FILE / _CA / _TLS_NAME keys as the main env file.
+    -> [(label, settings)] sorted by label; a file without a host or token is reported and skipped."""
+    out = []
+    try:
+        files = sorted(Path(dirpath).glob("*.env"))
+    except OSError:
+        return out
+    for f in files:
+        try:
+            e = read_env_file(f)
+        except OSError as err:
+            log.error("extra host %s: %s", f.name, err)
+            continue
+        token = _read_secret(e.get("PULSE_PVE_TOKEN_FILE", ""))
+        if not e.get("PULSE_PVE_HOST") or not token:
+            log.error("extra host %s: needs PULSE_PVE_HOST and a readable PULSE_PVE_TOKEN_FILE; skipped", f.name)
+            continue
+        out.append((f.stem, {"host": e["PULSE_PVE_HOST"], "port": int(e.get("PULSE_PVE_PORT", 8006)), "token": token,
+                             "ca": e.get("PULSE_PVE_CA") or None, "tls_name": e.get("PULSE_PVE_TLS_NAME") or None}))
+    return out
+
+
 def build_collector(env=os.environ):
     pve_mode = env.get("PULSE_PVE", "demo")
     ca = env.get("PULSE_PVE_CA", "/etc/homelab-pulse/pve-ca.pem")
@@ -79,6 +115,11 @@ def build_collector(env=os.environ):
     db = env.get("PULSE_DB") or str(Path(env.get("STATE_DIRECTORY", "/var/lib/homelab-pulse").split(":")[0]) / "pulse.db")
     st = store_mod.Store(db)
     pve = sources.PveClient(host, int(env.get("PULSE_PVE_PORT", 8006)), token, ca, env.get("PULSE_PVE_TLS_NAME") or None)
+    extra = extra_hosts(env.get("PULSE_PVE_HOSTS_DIR", "/etc/homelab-pulse/hosts.d"))
+    if extra:
+        log.info("watching %d Proxmox hosts: %s", 1 + len(extra), ", ".join([host] + [h["host"] for _, h in extra]))
+        pve = sources.MultiPve([("primary", pve)] + [
+            (label, sources.PveClient(h["host"], h["port"], h["token"], h["ca"], h["tls_name"])) for label, h in extra])
     c = collect.Collector(pve, "live", discover.Net(), probe_fn=probes.run, overrides_path=ov, ca_path=ca,
                           store=st, notifier=notify.Notifier(st, public_url))
     c.demo = False

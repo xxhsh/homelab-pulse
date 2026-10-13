@@ -16,4 +16,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck -S warning install.sh update.sh uninstall.sh homelab-pulse-passwd
+      - run: shellcheck -S warning install.sh update.sh uninstall.sh add-host.sh homelab-pulse-passwd homelab-pulse-hosts

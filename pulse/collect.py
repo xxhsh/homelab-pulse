@@ -16,6 +16,7 @@ import early
 import overrides as overrides_mod
 import probes as probes_mod
 import settings as settings_mod
+import sources
 import store as store_mod
 
 log = logging.getLogger("pulse")
@@ -80,6 +81,7 @@ def build_guests(resources, meta, rates, now):
             "status": r.get("status", "unknown"), "running": running, "tags": tags,
             "role": role, "icon": icon or "box", "ip": m.get("ip"), "ips": list(m.get("ips", ())),
             "services": [f.view() for f in m.get("services", ())],
+            "fs": [dict(f) for f in m.get("fs", ())] if running else [],
             "cpu": round(float(r.get("cpu") or 0), 4), "cores": r.get("maxcpu") or 0,
             "mem": r.get("mem") or 0, "maxmem": r.get("maxmem") or 0,
             "disk": r.get("disk") or 0, "maxdisk": r.get("maxdisk") or 0,
@@ -117,6 +119,30 @@ def build_disks(disks):
                     # PVE's "wearout" is life *remaining* (the GUI's "Wearout" column shows 100 minus it)
                     "wear_used": 100 - wear if isinstance(wear, int | float) else None})
     return out
+
+
+FS_SKIP = {"squashfs", "iso9660", "tmpfs", "devtmpfs", "overlay", "ramfs", "proc", "sysfs", "cgroup", "cgroup2",
+           "udf", "nsfs", "autofs", "fuse.lxcfs", "fuse.snapfuse"}
+FS_MIN_BYTES = 128 * 1024 ** 2       # EFI and appliance boot partitions: too small to be worth a row
+
+
+def vm_filesystems(data):
+    """QEMU guest agent get-fsinfo -> [{mount, type, used, total}] worth watching: real, writable
+    filesystems only, each device once (bind mounts repeat it; the shortest mount point wins)."""
+    entries = data.get("result", data) if isinstance(data, dict) else data
+    best = {}
+    for e in entries or ():
+        total, used = e.get("total-bytes"), e.get("used-bytes")
+        kind = (e.get("type") or "").lower()
+        if not isinstance(total, int | float) or not isinstance(used, int | float) or total < FS_MIN_BYTES:
+            continue
+        if kind in FS_SKIP:
+            continue
+        mount = e.get("mountpoint") or e.get("name") or "?"
+        dev = e.get("name") or mount
+        if dev not in best or len(mount) < len(best[dev]["mount"]):
+            best[dev] = {"mount": mount, "type": kind, "used": int(used), "total": int(total)}
+    return sorted(best.values(), key=lambda f: f["mount"])
 
 
 TASK_TEXT = {
@@ -276,6 +302,11 @@ def build_conditions(snap, stopped, tasks, now):
             out.append({"key": f"backup:{r['node']}", "kind": "backup_failed", "severity": "critical",
                         "title": f"Backup on {r['node']} failed: {(r.get('status') or '')[:60]}",
                         "target": r["node"], "node": r["node"]})
+    for c in snap.get("conflicts", []):
+        out.append({"key": f"conflict:{c['vmid']}", "kind": "warning", "severity": "warning",
+                    "title": f"VMID {c['vmid']} is used on {c['kept']} and {c['dropped']}: "
+                             f"only the one on {c['kept']} is shown. Give it a unique ID",
+                    "target": c["dropped"], "node": c["dropped"]})
     for vmid, ts in stopped.items():
         g = guests.get(vmid)
         if not g or g.get("running") or now - ts < STOP_SETTLE_S:
@@ -318,6 +349,7 @@ class Collector:
         self.storage, self.shared_storage, self.disks = {}, [], {}
         self.meta = {}              # vmid -> {ips, ip, tags, role, icon, services}
         self.agent_cache = {}
+        self.fs_cache = {}          # vmid -> when to ask its guest agent for filesystems again
         self.pending = {}           # vmid -> time its early discovery is due
         self.prev_running = None    # vmid -> running, from the previous fast poll
         self.last_full = None
@@ -326,6 +358,9 @@ class Collector:
         self.vzdump_logs = {}       # upid -> parsed log (finished logs never change)
         self.history = {}
         self.checks = {}            # id -> ProbeState, in plan order
+        self.conflicts = []         # VMIDs used on more than one standalone host (multi-host only)
+        self.clustered = True       # False when several standalone hosts are shown as one lab
+        self.vm_disk_levels = {"warn_pct": 90, "crit_pct": 97}   # for colouring; refreshed with the settings
         self._stop = threading.Event()
         self._probe_wake = threading.Event()   # set when new checks appear, so they're probed at once
         # 1.1: alerts, lasting history, early warnings
@@ -367,6 +402,7 @@ class Collector:
             for vmid in [v for v in self.stopped if running.get(v, False) or v not in running]:
                 del self.stopped[vmid]
             self.prev_running = running
+            self.conflicts = [{"vmid": v, "kept": a, "dropped": b} for v, a, b in getattr(self.pve, "conflicts", ())]
             self.resources, self.guests, self.nodes = res, guests, nodes
             self.storage, self.shared_storage = per_node, shared
             for n in nodes:
@@ -404,12 +440,14 @@ class Collector:
             status = self.pve.cluster_status()
             self.node_ips = {e["name"]: e.get("ip") for e in status if e.get("type") == "node"}
             cluster = next((e.get("name") for e in status if e.get("type") == "cluster"), None)
+            self.clustered = cluster is not None or len(self.node_ips) == 1
             self.lab_name = cluster or (next(iter(self.node_ips)) if len(self.node_ips) == 1 else "homelab")
         except Exception as e:  # noqa: BLE001
             log.warning("cluster status: %s", e)
         online = [n["name"] for n in self.nodes if n["online"]]
         for g in self.guests:
             self._refresh_ips(g, now)
+            self._refresh_fs(g, now)
         router = self._find_router(online)
         disks, runs, per_vm = {}, [], {}
         for node in online:
@@ -503,6 +541,7 @@ class Collector:
         """Conditions + early warnings -> alert engine -> notifier. Persists state and events."""
         now = self.clock()
         cfg = self.settings_loader()
+        self.vm_disk_levels = {k: cfg["warnings"]["vm_disk"][k] for k in ("warn_pct", "crit_pct")}
         snap = self.snapshot()
         if self.storage_hist_at is None or now - self.storage_hist_at >= self.STORAGE_HIST_EVERY:
             self._refresh_storage_history(snap)
@@ -632,6 +671,22 @@ class Collector:
         m = self.meta.setdefault(g["vmid"], {})
         m.update(tags=tags, ips=ips, ip=discover.pick_primary(ips, self.node_ips.get(g["node"])))
 
+    def _refresh_fs(self, g, now):
+        """Disk usage inside a running VM, from its guest agent (Proxmox itself can't see it).
+        A VM without a working agent is asked again after discover.AGENT_RETRY_S."""
+        m = self.meta.setdefault(g["vmid"], {})
+        if g["type"] != "qemu" or not g["running"]:
+            m["fs"] = []
+            return
+        if self.fs_cache.get(g["vmid"], 0) > now or self.agent_cache.get(g["vmid"], 0) > now:
+            return
+        try:
+            m["fs"] = vm_filesystems(self.pve.agent_fsinfo(g["node"], g["vmid"]))
+        except (sources.SourceError, OSError, ValueError, AttributeError) as e:
+            log.debug("fsinfo %s: %s", g["vmid"], e)
+            m["fs"] = []
+            self.fs_cache[g["vmid"]] = now + discover.AGENT_RETRY_S
+
     def _find_router(self, online):
         ov = self.ov.get("router", {})
         ip = ov.get("ip")
@@ -655,14 +710,16 @@ class Collector:
             m.update(services=found, role=tags.get("role") or fg.get("role") or role,
                      icon=tags.get("icon") or fg.get("icon") or icon)
             g.update(role=m["role"], icon=m["icon"], ip=m.get("ip"), ips=list(m.get("ips", ())),
-                     services=[f.view() for f in found])
+                     services=[f.view() for f in found],
+                     fs=[dict(f) for f in m.get("fs", ())] if g["running"] else [])
 
     def _replan(self):
         guests = [{"vmid": g["vmid"], "name": g["name"], "ip": self.meta.get(g["vmid"], {}).get("ip")}
                   for g in self.guests]
         services = {k: self.discoverer.services(k) for k in list(self.discoverer.known)}
         nodes = [{"name": n["name"], "ip": self.node_ips.get(n["name"])} for n in self.nodes]
-        specs = discover.plan_checks(services, guests, self.router, nodes, self.ov, self.ca_path)
+        ca = self.pve.node_cafile if hasattr(self.pve, "node_cafile") else self.ca_path
+        specs = discover.plan_checks(services, guests, self.router, nodes, self.ov, ca)
         new = {}
         for spec in specs:
             st = self.checks.get(spec["id"]) or ProbeState(spec)
@@ -760,4 +817,7 @@ class Collector:
                 "probes": [st.view(paused=not running.get(st.spec.get("target"), True)) for st in self.checks.values()],
                 "events": events,
                 "attention": list(self.attention),
+                "conflicts": list(self.conflicts),
+                "clustered": self.clustered,
+                "vm_disk": dict(self.vm_disk_levels),
             }

@@ -45,7 +45,7 @@ the header and footer, for embedding in another dashboard such as a Home Assista
 
 ```
 every 5 s    node + guest stats from /cluster/resources and each node's status
-every 60 s   guest IPs, SMART, backups (vzdump task logs), Proxmox task log
+every 60 s   guest IPs, disk usage inside VMs (guest agent), SMART, backups (vzdump task logs), task log
 every 5 min  discovery: scan each running guest, identify what answers, update the checks
              (a guest that was just created or started is scanned 45 s later)
 every 15 s   run the health checks, 8 at a time; a check turns red after 2 failures in a row
@@ -71,6 +71,31 @@ every 15 s   run the health checks, 8 at a time; a check turns red after 2 failu
 - A service has to be missing from **two scans in a row** before it is dropped, so a guest that reboots
   during a scan doesn't lose its checks. Checks for a stopped guest are paused (grey), not red.
 - **Clusters:** every node gets its own hub on the map and its own panel. Guests move with migrations.
+- **Disks inside VMs:** Proxmox only knows how full a *container* is. For VMs, Pulse asks the QEMU guest
+  agent (`get-fsinfo`) and shows each real filesystem in the VM's drawer (read-only roots, bind mounts and
+  tiny boot partitions are left out). Needs the agent running in the VM; VMs without it just show their
+  allocated size.
+
+## Several standalone hosts
+
+A cluster needs nothing extra: one Pulse sees every node. For Proxmox hosts that **aren't** clustered
+(a second box, a laptop node), Pulse can watch them too and show them all as one lab:
+
+1. On the **other** host, as root:
+   ```bash
+   bash -c "$(curl -fsSL https://raw.githubusercontent.com/3g15h1/homelab-pulse/main/add-host.sh)"
+   ```
+   It creates the same read-only `pulse@pve` user (PVEAuditor) and a token there, and prints one line.
+2. Paste that line into the Pulse container's shell (`pct enter <id>` on the host Pulse runs on):
+   `homelab-pulse-hosts add <name> <bundle>`. Pulse restarts and the host appears within a minute.
+
+The line contains that host's read-only token, so treat it like a password. `homelab-pulse-hosts list`
+shows the extra hosts, `homelab-pulse-hosts remove <name>` drops one (then `add-host.sh --remove` on that
+host deletes its token). Each host's UI check is verified against its own CA.
+
+- A host that stops answering shows as an offline node (and raises *Node offline*); the others carry on.
+- **VMIDs must be unique across hosts**, as they would be in a cluster. If two hosts use the same ID, the
+  first host's guest is shown and an *Attention* warning names the clash.
 
 ## Alerts
 
@@ -114,6 +139,7 @@ Problems that aren't outages yet. They show in an **Attention** strip on the das
 | Guest without a recent backup | no successful backup in 48 h (guests in a backup job) |
 | Node memory high | above 90 % for 15 minutes |
 | Container disk filling up | above 90 % (critical: 97 %) |
+| VM disk filling up | any filesystem inside a VM above 90 % (critical: 97 %), via the guest agent |
 
 The storage forecast uses **Proxmox's own history** (its RRD database), so it works from the first minute.
 It only warns about a steady trend, not a one-off copy.
@@ -176,7 +202,7 @@ Precedence: guest tags, then `overrides.json`, then discovery, then a guess from
 
 `/etc/homelab-pulse/env` (see `env.example`): `PULSE_PVE` (`live` or `demo`), `PULSE_PVE_HOST`,
 `PULSE_PVE_PORT`, `PULSE_PVE_TOKEN_FILE`, `PULSE_PVE_CA`, `PULSE_PVE_TLS_NAME` (rarely needed),
-`PULSE_OVERRIDES`, `PULSE_DB`, `PULSE_ADMIN_PASSWORD_FILE`, `PULSE_PUBLIC_URL` (the link used in
+`PULSE_PVE_HOSTS_DIR` (extra standalone hosts, default `/etc/homelab-pulse/hosts.d`), `PULSE_OVERRIDES`, `PULSE_DB`, `PULSE_ADMIN_PASSWORD_FILE`, `PULSE_PUBLIC_URL` (the link used in
 notifications), `PULSE_PORT`, `PULSE_BIND`, `PULSE_LOG`. Restart after editing:
 `systemctl restart homelab-pulse`.
 
@@ -217,8 +243,9 @@ Python 3.11+ standard library only. There's nothing to `pip install`.
   and the alerts you configure.
 - Text taken from scanned services (page titles, headers) is shortened and always shown escaped.
 
-**Proxmox VE 8:** reading a VM's addresses through the guest agent needs `VM.Monitor`, which the
-read-only role doesn't have on PVE 8. Containers are unaffected. Give VMs a static IP or a `pulse-ip-…` tag.
+**Proxmox VE 8:** reading a VM's addresses and disk usage through the guest agent needs `VM.Monitor`, which
+the read-only role doesn't have on PVE 8 (PVE 9's PVEAuditor includes `VM.GuestAgent.Audit`, which is enough).
+Containers are unaffected. Give VMs a static IP or a `pulse-ip-…` tag.
 
 ## Uninstall
 

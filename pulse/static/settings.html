@@ -204,6 +204,7 @@ const WARN = {
   backup_stale: ["Guest without a recent backup", { hours: "after (hours)" }],
   node_memory: ["Node memory high", { pct: "above (%)", minutes: "for (minutes)" }],
   ct_disk: ["Container disk filling up", { warn_pct: "warn above (%)", crit_pct: "critical above (%)" }],
+  vm_disk: ["VM disk filling up (guest agent)", { warn_pct: "warn above (%)", crit_pct: "critical above (%)" }],
 };
 
 function fill(c) {

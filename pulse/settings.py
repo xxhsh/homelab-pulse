@@ -27,6 +27,7 @@ DEFAULTS = {
         "backup_stale": {"enabled": True, "hours": 48},
         "node_memory": {"enabled": True, "pct": 90, "minutes": 15},
         "ct_disk": {"enabled": True, "warn_pct": 90, "crit_pct": 97},
+        "vm_disk": {"enabled": True, "warn_pct": 90, "crit_pct": 97},
     },
 }
 
@@ -69,6 +70,7 @@ SCHEMA = {
         "backup_stale": {"enabled": BOOL, "hours": _int(1, 24 * 365)},
         "node_memory": {"enabled": BOOL, "pct": PCT, "minutes": _int(1, 1440)},
         "ct_disk": {"enabled": BOOL, "warn_pct": PCT, "crit_pct": PCT},
+        "vm_disk": {"enabled": BOOL, "warn_pct": PCT, "crit_pct": PCT},
     },
 }
 

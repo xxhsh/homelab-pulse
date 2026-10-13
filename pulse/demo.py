@@ -182,6 +182,27 @@ class DemoPve:
         return {"result": [{"name": "lo", "ip-addresses": [{"ip-address": "127.0.0.1", "ip-address-type": "ipv4"}]},
                            {"name": "ens18", "ip-addresses": [{"ip-address": g[8], "ip-address-type": "ipv4"}]}]}
 
+    def agent_fsinfo(self, node, vmid):
+        g = GUESTS[int(vmid)]
+        if not g[10]:
+            raise SourceError(f"PVE /nodes/{node}/qemu/{vmid}/agent/get-fsinfo: HTTP 500 "
+                              "QEMU guest agent is not running")
+        size = g[5] * GIB
+
+        def fs(name, mount, kind, total, used):
+            return {"name": name, "mountpoint": mount, "type": kind, "total-bytes": int(total),
+                    "used-bytes": int(used), "disk": [{"bus-type": "scsi", "dev": f"/dev/{name}"}]}
+        if int(vmid) == 103:   # Home Assistant OS: read-only root, data partition bind-mounted many times
+            data = size - 1.2 * GIB
+            return {"result": [fs("sda8", "/", "squashfs", 0.3 * GIB, 0.3 * GIB),
+                               fs("sda1", "/mnt/boot", "vfat", 32 * 1024 ** 2, 9 * 1024 ** 2),
+                               fs("sda8", "/mnt/data", "ext4", data, data * 0.41),
+                               fs("sda8", "/mnt/data/supervisor/homeassistant", "ext4", data, data * 0.41),
+                               fs("zram1", "/var", "ext4", 32 * 1024 ** 2, 2 * 1024 ** 2)]}
+        # the NAS VM is nearly full, so the demo shows a VM disk warning
+        return {"result": [fs("sda1", "/", "ext4", size - 0.5 * GIB, (size - 0.5 * GIB) * 0.93),
+                           fs("sda15", "/boot/efi", "vfat", 0.12 * GIB, 0.01 * GIB)]}
+
     def disks(self, node):
         if node == "pve1":
             return [{"devpath": "/dev/nvme0n1", "model": "Samsung SSD 980 1TB", "type": "nvme", "size": 1000204886016,
